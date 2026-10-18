@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vega-two-gate-sdk"
+version = "0.1.0"
+description = "Two-gate containment (Kronos) with a human-only hard stop and recovery."
+requires-python = ">=3.10"
+dependencies = ["vega-custody-sdk", "vega-governance-jacket-sdk"]
+license = {file = "LICENSE"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
