@@ -19,10 +19,10 @@ Terms as the code uses them (definitions simplified from the docstrings):
 - **Request capsule.** The input, as a capsule from vega-custody-sdk: content plus metadata with a `prefix_hash` fingerprint. Its data becomes the job's stdin.
 - **Commitment.** A human-signed note for one exact action (`kind` `WCOMMIT`), minted in the ledger, with an `action`, an `action_hash`, an `expiry` and a `nonce_sha256`. For a job it must be for the action `run_job`.
 - **Job binding.** With `bind_job=True` (the default), the commitment's `action_hash` must equal `humanauth.action_hash(job_params(job_id, argv, request))`, so one signature authorises exactly one job id, program, arguments and request. `bind_job=False` is a legacy loose mode that checks only the action name.
-- **Single-use.** A commitment whose `action_hash` already appears in a `KRONOS_IDENTIFY` record is refused: one commitment, one job.
+- **Single-use.** A commitment whose `action_hash` already appears in a `KRONOS_IDENTIFY` record is refused: one commitment, one job. The check and the record happen under one lock, so two concurrent runs cannot both start on one commitment.
 - **Contained run.** The job runs as a separate process (a `ProcessJob` from vega-custody-sdk) with a stripped environment, a throwaway working directory, a wall-clock timeout and an output cap.
 - **Output cap.** `OUTPUT_CAP` = 256 KiB. Readers never buffer more than cap+1 bytes per stream; exceeding it ends the run with status `overflow`.
-- **Reviewer.** A callable that receives the output bytes and returns a verdict dict. Only `{"ok": True, ...}` releases. A reviewer that crashes, or returns anything unclear, has *not* approved: that is a failed review.
+- **Reviewer.** A callable that receives the output bytes and returns a verdict dict. Only `{"ok": True, ...}` releases. A reviewer that crashes, or returns anything unclear, has *not* approved: that is a failed review. With no reviewer, the strict default (`strict_reviewer`) applies; `reviewer=contain.NO_REVIEW` releases without review and the record says `released WITHOUT review`.
 - **Hard stop.** A one-way ratchet: anyone or anything can engage it; while engaged nothing runs; only a human key can lift it (the restore action `restore_after_hard_stop` is HUMAN_ONLY). It is file-backed (a marker file) *and* record-backed (DAG entries), so it survives restarts and marker deletion.
 - **Restore.** Lifting the hard stop. A `HARD_STOP_RESTORED` record lifts the stop only if it carries a commitment for exactly `restore_after_hard_stop` that verifies in the ledger and whose nonce has not already lifted an earlier stop.
 - **Record (DAG).** The append-only, hash-linked chain from vega-custody-sdk. This kit writes record kinds `KRONOS_IDENTIFY`, `KRONOS_LOCATE`, `KRONOS_REVIEW`, `KRONOS_REMOVE`, `KRONOS_RELEASE`, `KRONOS_RECOVER`, `HARD_STOP_ENGAGED`, `HARD_STOP_RESTORED`.
@@ -108,7 +108,7 @@ Terms as the code uses them (definitions simplified from the docstrings):
 | OS-level isolation | Process containment only; the source docstring says run hostile code inside a VM or container. STATUS.md: sandbox is DESIGNED ONLY. |
 | Containment of a detached descendant on POSIX | The red-team suite skips that case off Windows and names a cgroup or container as the answer. |
 | Unforgeable stop state on a single compromised disk | Whoever can write both the chain files and the ledger files can forge both; the source recommends a second replica or off-machine witnessing. |
-| Meaningful output review by default | `reviewer=None` records a default ok verdict; the kit ships no reviewer. |
+| Meaningful output review by default | The strict default (`strict_reviewer`) checks form only: valid text, no control or escape characters, no credential-shaped strings, under the cap. It does not judge meaning. |
 | Safety of the program's side effects outside the workdir | Containment bounds the process, its environment, its runtime and its output — not what an authorised program legitimately does. |
 | Production hardening or cryptographic strength | Reference implementation; not independently security-reviewed; crypto not expert-reviewed. |
 
@@ -145,6 +145,6 @@ Dependencies point down layers only, never up or sideways: this kit (layer 4) us
 
 ## 7. Conformance
 
-A third party can verify this kit by running `tests/` with the `src` directories of this repo and both dependencies on `PYTHONPATH`: `test_kronos.py` exits 0 only if every check passes; each `redteam_*.py` file is a unittest module that must pass with zero failures and zero errors (Windows-only tests skip elsewhere). `fixture_kronos.py` is a shared fixture, not a test file. STATUS.md and REVIEW.md record 52 tests in 4 files, all passing, and an automated review with 0 high, 0 medium, 0 low findings and 5 reviewed info notes.
+A third party can verify this kit by running `tests/` with the `src` directories of this repo and both dependencies on `PYTHONPATH`: `test_kronos.py` exits 0 only if every check passes; each `redteam_*.py` file is a unittest module that must pass with zero failures and zero errors (Windows-only tests skip elsewhere). `fixture_kronos.py` is a shared fixture, not a test file. STATUS.md and REVIEW.md record 63 tests in 5 files, all passing, and an automated review with 0 high, 0 medium, 0 low findings and 5 reviewed info notes.
 
 What passing means: the behaviors in sections 3–5 hold on the tested platforms, as demonstrated by these tests. What passing does NOT mean: that the kit is secure in general, hardened for production, independently security-reviewed, or safe against an attacker who controls the machine's storage — a clean scan is not proof of safety (REVIEW.md).

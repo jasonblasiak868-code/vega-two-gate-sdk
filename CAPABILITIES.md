@@ -44,7 +44,7 @@ Everything listed is BUILT per STATUS.md. The operating-system-level sandbox is 
 - **Why policy cannot provide it.** A model asked "is this output safe?" answers with the same fallible machinery that produced the output. The gate here is not an opinion channel: ambiguous, crashed or missing verdicts default to *refuse*, so the exit is closed unless approval is explicit and machine-checkable.
 - **Where enforced.** `contain.py` — `review`, the release branch of `Containment.run`.
 - **Demonstrated by.** `tests/redteam_3_audit_findings.py` (`F3_ReviewerFailures`: six loose/crashing reviewers all refuse and clean up; an explicit ok true still releases), `tests/test_kronos.py` (hard-flagged review removes the output and engages the stop).
-- **Honest limit.** The kit ships no reviewer; with `reviewer=None` the recorded verdict is a default ok. Review quality is entirely the caller's responsibility.
+- **Honest limit.** The default reviewer is strict about form (valid text, no control or escape characters, no credential-shaped strings, under the cap) and says nothing about meaning. `reviewer=contain.NO_REVIEW` releases without review and the record says so. Review quality beyond that is the caller's responsibility.
 
 ## 6. Verified teardown that never follows a planted link
 

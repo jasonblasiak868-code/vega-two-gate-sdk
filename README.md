@@ -79,16 +79,16 @@ A full run wires an `EntryGate`, a `HardStop`, a `Dag` and a `Ledger` from the t
 ## What it does NOT do
 
 - **Not a security review.** Passing tests and a clean automated scan are not proof of safety; REVIEW.md says so in terms.
-- **Containment is process-level, not an OS sandbox.** The limit is printed in the source docstring: run hostile code inside a VM or container. STATUS.md lists the OS-level sandbox as DESIGNED ONLY.
+- **Containment is process-level, not an OS sandbox: run untrusted jobs inside a VM or container with network egress OFF.** Nothing here blocks network or file access. The limit is printed in the source docstring. STATUS.md lists the OS-level sandbox as DESIGNED ONLY.
 - **The licence and this README are policy, not legal advice.** The licence text is a draft that no attorney has reviewed.
-- **The default reviewer approves.** With `reviewer=None`, `review` records a default ok verdict. This kit ships no reviewer; a real deployment must supply one.
+- **The default reviewer is a floor, not a judgement.** With no reviewer, a strict default applies: the output must be valid UTF-8 text with no control or terminal-escape characters and no credential-shaped string, under the size cap. A hostile job can still print misleading plain text, so supply your own reviewer for anything that matters. Releasing with no review at all must be asked for by name (`reviewer=contain.NO_REVIEW`) and is recorded as such.
 - **One disk is not enough to trust a restore.** The source states it plainly: whoever can write both the chain files and the ledger files can forge both. Keep a second ledger replica or witness the roots off the machine.
 - **On POSIX a descendant that detaches is a documented limit.** The test suite skips that case off Windows and points at a cgroup or a container.
 - **It does not make a model aligned, truthful or kind.** It bounds what can run and what can leave. The human is still the weak point.
 
 ## Tests
 
-52 tests in 4 files, all passing (counts from STATUS.md and REVIEW.md). Files: `test_kronos.py` (selftest script), `redteam_1_containment.py`, `redteam_2_state_and_replay.py`, `redteam_3_audit_findings.py` (unittest red-team passes), plus `fixture_kronos.py`, a shared fixture that is not itself a test file. Some red-team tests are Windows-specific and skip elsewhere.
+63 tests in 5 files, all passing (counts from STATUS.md and REVIEW.md). Files: `test_kronos.py` (selftest script), `redteam_1_containment.py`, `redteam_2_state_and_replay.py`, `redteam_3_audit_findings.py` (unittest red-team passes), plus `fixture_kronos.py`, a shared fixture that is not itself a test file. Some red-team tests are Windows-specific and skip elsewhere.
 
 Run: put this repo's `src` and the `src` of both dependencies on `PYTHONPATH`, then run each file in `tests/`, for example `python tests/redteam_1_containment.py`. Each file exits 0 only if every check passes.
 

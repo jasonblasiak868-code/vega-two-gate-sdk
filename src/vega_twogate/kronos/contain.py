@@ -6,7 +6,9 @@
   - the job runs as a separate process with a stripped environment, a throwaway working directory, a wall-clock
     timeout and an output cap; on timeout the whole process tree is killed
   - the entry gate admits only verified capsules; the job needs a minted, unexpired commitment
-  - the output is reviewed BEFORE it is released; a failed review removes it and can engage the hard stop
+  - the output is reviewed BEFORE it is released; a failed review removes it and can engage the hard stop. With no reviewer given, the STRICT default applies (valid
+    text, no control or terminal-escape characters, no credential-shaped strings, under the size cap). Releasing without any review must be asked for by name
+    (reviewer=NO_REVIEW) and is recorded as such
   - the hard stop is a one-way ratchet anyone (or anything) can engage and only the human key can lift
     (restore_after_hard_stop is HUMAN_ONLY). While engaged, nothing runs.
 HONEST LIMIT: process containment, not an OS sandbox. Run hostile code inside a VM or container."""
@@ -14,19 +16,22 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from vega_jacket import humanauth  # noqa: E402
 from vega_custody.capsule import capsule as capsule_mod  # noqa: E402
 from vega_jacket.commit.commit import CommitRefused  # noqa: E402
 from vega_custody.dag.dag import DagError  # noqa: E402
-from vega_custody.proc import ProcessJob  # noqa: E402
+from vega_custody.proc import ProcessJob, kill_tree  # noqa: E402
 
 OUTPUT_CAP = 256 * 1024
+_ADMIT_LOCK = threading.Lock()     # "already used?" and "record that it is used" happen under this lock, so two runs cannot both pass the check
 RESTORE_ACTION = "restore_after_hard_stop"
 
 
@@ -100,24 +105,9 @@ class HardStop:
 
 
 def _kill_tree(proc, wait: float = 5.0) -> bool:
-    """Kill the whole process tree and VERIFY the process is gone. True only if it is. (A kill that is never checked is a hard stop that may not have stopped.)"""
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=10)
-        else:
-            import signal
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (OSError, subprocess.SubprocessError):
-        pass  # fall through to the direct kill; the wait below decides whether it worked  # reviewed: fall through to proc.kill() and the verified wait below; failure here is detected there
-    try:
-        proc.kill()
-    except OSError:
-        pass  # reviewed: process may already be gone; the verified wait below decides success
-    try:
-        proc.wait(timeout=wait)
-    except subprocess.TimeoutExpired:
-        return False
-    return proc.poll() is not None
+    """Kill the whole process tree and VERIFY the process is gone. True only if it is. (A kill that is never checked is a hard stop that may not have stopped.)
+    One implementation for the family: vega_custody.proc.kill_tree (it finds the process group even after the leader was reaped)."""
+    return kill_tree(proc, wait)
 
 
 def _run_bounded(proc, stdin_bytes: bytes, timeout: float, cap: int):
@@ -175,17 +165,43 @@ def locate(dag, job_id: str, workdir: str, pid: int, parent: str) -> dict:
     return dag.record("KRONOS_LOCATE", {"job": job_id, "workdir": workdir, "pid": pid}, parents=[parent])
 
 
+_CRED = re.compile(r"(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[abprs]-[A-Za-z0-9-]{10,}"
+                   r"|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})")
+_BIDI = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0x200E, 0x200F, 0x061C}
+
+
+def strict_reviewer(output: bytes) -> dict:
+    """The default reviewer: releases only valid UTF-8 text with no control characters (other than tab, newline, carriage return), no terminal escapes (C0, DEL, C1), no
+    bidirectional-override characters, and no credential-shaped string. The reason never repeats what it found. This is a floor, not a judgement: a hostile job can still
+    print misleading plain text. Pass your own reviewer for anything that matters."""
+    try:
+        text = output.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"ok": False, "hard": False, "reason": "output is not valid UTF-8 text"}
+    for ch in text:
+        o = ord(ch)
+        if (o < 32 and ch not in "\t\n\r") or o == 127 or 0x80 <= o <= 0x9F or o in _BIDI:
+            return {"ok": False, "hard": False, "reason": "output contains control, terminal-escape or direction-override characters"}
+    if _CRED.search(text):
+        return {"ok": False, "hard": False, "reason": "output contains a credential-shaped string"}
+    return {"ok": True, "hard": False, "reason": "strict default review passed"}
+
+
+def NO_REVIEW(output: bytes) -> dict:
+    """Pass as reviewer= to release output with NO review beyond the size cap. It has to be asked for by name, and the record says so."""
+    return {"ok": True, "hard": False, "reason": "released WITHOUT review (caller passed NO_REVIEW)"}
+
+
 def review(dag, job_id: str, output: bytes, reviewer, parent: str) -> dict:
-    """The reviewer must return a dict whose 'ok' is exactly True. A reviewer that crashes, returns something else, or leaves out 'ok' has not approved the output: that is a failed review."""
+    """With no reviewer, the strict default applies (strict_reviewer). The reviewer must return a dict whose 'ok' is exactly True. A reviewer that crashes, returns something else, or leaves out 'ok' has not approved the output: that is a failed review."""
     if reviewer is None:
-        verdict = {"ok": True, "hard": False, "reason": "default review"}
-    else:
-        try:
-            verdict = reviewer(output)
-            if not isinstance(verdict, dict) or verdict.get("ok") is not True and verdict.get("ok") is not False:
-                verdict = {"ok": False, "hard": False, "reason": "the reviewer did not return a clear ok true or false"}
-        except Exception as exc:  # reviewed: a reviewer that fails has not approved anything; the run is refused and cleaned up like any failed review
-            verdict = {"ok": False, "hard": False, "reason": f"the reviewer failed: {type(exc).__name__}"}
+        reviewer = strict_reviewer
+    try:
+        verdict = reviewer(output)
+        if not isinstance(verdict, dict) or verdict.get("ok") is not True and verdict.get("ok") is not False:
+            verdict = {"ok": False, "hard": False, "reason": "the reviewer did not return a clear ok true or false"}
+    except Exception as exc:  # reviewed: a reviewer that fails has not approved anything; the run is refused and cleaned up like any failed review
+        verdict = {"ok": False, "hard": False, "reason": f"the reviewer failed: {type(exc).__name__}"}
     if len(output) > OUTPUT_CAP:
         verdict = {"ok": False, "hard": False, "reason": f"output {len(output)} bytes over cap"}
     e = dag.record("KRONOS_REVIEW", {"job": job_id, "output_sha256": hashlib.sha256(output).hexdigest(),
@@ -266,7 +282,13 @@ class Containment:
         if self.hard_stop.engaged():
             raise HardStopEngaged("hard stop engaged: nothing runs until a human lifts it")
         self.entry_gate.admit(request)  # raises on a tampered capsule or a card claiming human-only power
-        if int(commitment.get("expiry", 0)) <= int(self._clock()) or not self.ledger.verify(commitment):
+        if not isinstance(commitment, dict):
+            raise ContainmentRefused("a commitment is an object")
+        try:
+            expired = int(commitment.get("expiry", 0)) <= int(self._clock())
+        except (TypeError, ValueError, OverflowError):
+            raise ContainmentRefused("the commitment's expiry is not a whole number") from None
+        if expired or not self.ledger.verify(commitment):
             raise ContainmentRefused("no minted, unexpired commitment for this job")
         if commitment.get("kind") != "WCOMMIT":
             raise ContainmentRefused("only a human commitment (kind WCOMMIT) can start a job")
@@ -275,9 +297,13 @@ class Containment:
         if self.bind_job and commitment.get("action_hash") != humanauth.action_hash(job_params(job_id, argv, request)):
             raise ContainmentRefused("the commitment does not bind this job id, program and request: sign job_params(job_id, argv, request)")
 
-        if any(e["kind"] == "KRONOS_IDENTIFY" and e["payload"].get("action_hash") == commitment["action_hash"] for e in self.dag.content.entries()):
-            raise ContainmentRefused("this commitment was already used for a job: one commitment, one job")
-        ident = identify(self.dag, job_id, request, commitment)
+        with _ADMIT_LOCK:                                      # check and record as one step: one commitment, one job, even under concurrent callers
+            if any(e["kind"] == "KRONOS_IDENTIFY" and e["payload"].get("action_hash") == commitment["action_hash"] for e in self.dag.content.entries()):
+                raise ContainmentRefused("this commitment was already used for a job: one commitment, one job")
+            try:
+                ident = identify(self.dag, job_id, request, commitment)
+            except DagError as exc:                             # another writer got in first, or the record refused: nothing ran
+                raise ContainmentRefused(f"{job_id}: the job could not be recorded, so it was not run ({type(exc).__name__})") from exc
         work = pathlib.Path(tempfile.mkdtemp(prefix="vega_kronos_"))
         env = {"PYTHONIOENCODING": "utf-8", "TEMP": str(work), "TMP": str(work)}
         if os.environ.get("SYSTEMROOT"):
@@ -289,7 +315,14 @@ class Containment:
             raise ContainmentRefused(f"{job_id}: the program could not be started inside a containment job ({type(exc).__name__}: {exc}); nothing ran" + ("" if gone else "; work folder NOT removed")) from exc
         proc = job.proc
         try:
-            loc = locate(self.dag, job_id, str(work), proc.pid, ident["entry_hash"])
+            try:
+                loc = locate(self.dag, job_id, str(work), proc.pid, ident["entry_hash"])
+            except DagError as exc:                             # the program is already running: stop it, remove its folder, and refuse (never leave either behind)
+                dead = job.kill()
+                gone = self._teardown(job_id, work, ident["entry_hash"])
+                if not dead or not gone:
+                    self.hard_stop.engage(f"{job_id}: record failed after start" + ("" if dead else "; KILL NOT CONFIRMED") + ("" if gone else "; WORKDIR NOT REMOVED"))
+                raise ContainmentRefused(f"{job_id}: the job could not be recorded after it started; killed and removed, nothing released ({type(exc).__name__})") from exc
             stdin = capsule_mod.data_of(request)
             stdin = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
             out, err, status = _run_bounded(proc, stdin, timeout, OUTPUT_CAP)
@@ -317,6 +350,12 @@ class Containment:
         finally:
             job.kill()                                             # idempotent; on every exit path nothing of the job is left running
             job.close()
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):    # release the three pipe handles (they were left open, one set per job)
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except (OSError, ValueError):
+                    pass  # reviewed: already closed by the reader or writer thread
 
         rv = review(self.dag, job_id, out, reviewer, loc["entry_hash"])
         if proc.returncode != 0 or not rv["ok"]:

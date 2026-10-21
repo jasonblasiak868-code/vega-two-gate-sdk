@@ -4,7 +4,7 @@
 
 - kronos
 
-Tests: 52 tests in 4 files, all passing.
+Tests: 63 tests in 5 files, all passing.
 
 ## DESIGNED ONLY (not built)
 
