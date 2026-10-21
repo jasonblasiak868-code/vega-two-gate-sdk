@@ -2,6 +2,13 @@
 
 ![vega-two-gate-sdk](assets/tile.svg)
 
+<!-- vega-install-order -->
+> **Build order: 3/3. This kit needs 2 other Vega kits installed first.** Install them in this order, then this one:
+> 1/3 `vega-custody-sdk`  
+> 2/3 `vega-governance-jacket-sdk`  
+> 3/3 `vega-two-gate-sdk` (this kit)
+> Install each with `pip install --no-deps git+https://github.com/jasonblasiak868-code/<name>` in the order shown, plus `pip install cryptography`. Full steps: [INTEGRATION_GUIDE](https://github.com/jasonblasiak868-code/vega-umbrella-sdk/blob/main/INTEGRATION_GUIDE.md).
+
 Two-gate containment (Kronos) with a hard stop only the human key can lift. This kit owns one concern in the Vega family: **containment between two gates and the hard stop**. It runs a job as a separate, bounded process. Nothing enters without passing the entry gate, and nothing leaves without passing review at the exit gate. When anything goes wrong it removes the output, engages a hard stop that freezes all future runs, and waits for a human signature to lift it. Think of a bank vault corridor: money cannot walk out the back door, and if the alarm trips the whole branch stops until a manager with the only key says otherwise.
 
 > **Licensing.** Source-available, not open source. Free for personal use; free for registered small businesses (under US$1M revenue and valuation); everyone else needs a commercial license (see LICENSE; for a commercial license write to jasonblasiak.ai.mail@gmail.com). Patent pending. Draft licence text, not yet reviewed by an attorney.
